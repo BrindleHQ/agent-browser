@@ -127,6 +127,21 @@ fn format_storage_text(data: &serde_json::Value) -> Option<String> {
     Some(format!("{}: {}", key, format_storage_value(value)))
 }
 
+/// Formats the daemon's `errors` payload for text output. The daemon stores each
+/// page error under `text` (see `EventTracker::get_errors_json`), so reading any
+/// other field prints a blank line per error.
+fn format_errors_text(data: &serde_json::Value) -> Option<String> {
+    let errors = data.get("errors").and_then(|v| v.as_array())?;
+    let lines = errors
+        .iter()
+        .map(|err| {
+            let text = err.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            format!("{} {}", color::error_indicator(), text)
+        })
+        .collect::<Vec<_>>();
+    Some(lines.join("\n"))
+}
+
 /// Formats the daemon's preformatted React tree, including an empty-tree hint.
 fn format_react_tree_text(action: Option<&str>, data: &serde_json::Value) -> Option<String> {
     if action != Some("react_tree") {
@@ -974,10 +989,9 @@ fn print_primary_response(resp: &Response, action: Option<&str>, opts: &OutputOp
             return;
         }
         // Errors
-        if let Some(errors) = data.get("errors").and_then(|v| v.as_array()) {
-            for err in errors {
-                let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                println!("{} {}", color::error_indicator(), msg);
+        if let Some(output) = format_errors_text(data) {
+            if !output.is_empty() {
+                println!("{}", output);
             }
             return;
         }
@@ -4480,9 +4494,9 @@ pub fn print_version() {
 #[cfg(test)]
 mod tests {
     use super::{
-        boundary_origin, format_a11y_text, format_react_tree_text, format_snapshot_delta,
-        format_storage_text, format_vitals_text, format_webmcp_context, format_webmcp_text,
-        format_webmcp_tool_text, format_with_boundaries, OutputOptions,
+        boundary_origin, format_a11y_text, format_errors_text, format_react_tree_text,
+        format_snapshot_delta, format_storage_text, format_vitals_text, format_webmcp_context,
+        format_webmcp_text, format_webmcp_tool_text, format_with_boundaries, OutputOptions,
     };
     use serde_json::json;
 
@@ -4557,6 +4571,36 @@ mod tests {
         let rendered = super::format_stream_status_text(Some("stream_status"), &data).unwrap();
 
         assert_eq!(rendered, "Streaming disabled");
+    }
+
+    #[test]
+    fn test_format_errors_text_uses_daemon_text_field() {
+        let data = json!({
+            "errors": [
+                { "text": "Error: first boom\n    at http://localhost/index.html:2:15", "url": null, "line": 1, "column": 14 },
+                { "text": "ReferenceError: nope is not defined", "url": null, "line": null, "column": null }
+            ]
+        });
+
+        let rendered = format_errors_text(&data).unwrap();
+
+        assert_eq!(
+            rendered,
+            format!(
+                "{} Error: first boom\n    at http://localhost/index.html:2:15\n{} ReferenceError: nope is not defined",
+                crate::color::error_indicator(),
+                crate::color::error_indicator()
+            )
+        );
+    }
+
+    #[test]
+    fn test_format_errors_text_for_empty_list() {
+        assert_eq!(
+            format_errors_text(&json!({ "errors": [] })).as_deref(),
+            Some("")
+        );
+        assert_eq!(format_errors_text(&json!({ "other": 1 })), None);
     }
 
     #[test]
